@@ -42,8 +42,10 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
-        if (holder.surface != null && holder.surface.isValid) {
-            streamer.startPreview()
+        // The surface exists from here on. The streamer starts the preview and
+        // applies any stream options that arrived before this callback.
+        if (::streamer.isInitialized) {
+            streamer.onSurfaceCreated()
         }
     }
 

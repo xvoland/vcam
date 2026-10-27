@@ -31,7 +31,7 @@ import java.util.logging.Filter
 class Streamer(
     private var options: StreamOptions,
     context: Context,
-    openGlView: OpenGlView,
+    private val openGlView: OpenGlView,
 ) : ConnectChecker {
 
     companion object {
@@ -43,6 +43,12 @@ class Streamer(
 
     private val rtspServerCamera2 = RtspServerCamera2(openGlView, this, PORT)
     private val connectionManager = ConnectionManager.getInstance()
+
+    /**
+     * Stream options that arrived before the SurfaceView had a valid surface.
+     * Applied by [onSurfaceCreated].
+     */
+    private var pendingOptions: StreamOptions? = null
 
     private var bitrateAdapter = BitrateAdapter {
         if (options.adaptiveBitrateEnabled) {
@@ -68,10 +74,15 @@ class Streamer(
     }
 
     fun stop() {
-        rtspServerCamera2.stopPreview()
+        // `stopPreview()` also renders through the OpenGlView, so it needs a
+        // surface just like `startPreview()` does.
+        if (hasValidSurface()) {
+            rtspServerCamera2.stopPreview()
+        }
         if (rtspServerCamera2.isStreaming) {
             rtspServerCamera2.stopStream()
         }
+        pendingOptions = null
     }
 
     /**
@@ -251,18 +262,67 @@ class Streamer(
     }
 
     fun setH265Codec(enabled: Boolean) {
+        // Keep the local state in sync so a later restart re-applies the right
+        // codec (the ACTIVATION packet sets this too).
+        options.h265Enabled = enabled
         val codec = if (enabled) VideoCodec.H265 else VideoCodec.H264
-        rtspServerCamera2.setVideoCodec(codec)
 
-        // Only restart if we are actually streaming
-        if (rtspServerCamera2.isStreaming) {
-            restartStream()
+        if (!rtspServerCamera2.isStreaming) {
+            rtspServerCamera2.setVideoCodec(codec)
+            return
         }
+
+        // The server is running and `setVideoCodec` would throw. It has to be
+        // stopped first, so reuse the restart path that already does that.
+        restartStream()
     }
 
-    fun startPreview() {
+    /**
+     * True once the SurfaceView actually has a surface to render into.
+     *
+     * The view is inflated and measured asynchronously, so an ACTIVATION packet
+     * can easily arrive before the surface exists.
+     */
+    private fun hasValidSurface(): Boolean =
+        openGlView.holder.surface?.isValid == true
+
+    /**
+     * Starts the preview, or reports that it had to be postponed.
+     *
+     * `RtspServerCamera2.startPreview()` renders through the OpenGlView and
+     * throws `IllegalArgumentException: Make sure the SurfaceView or associated
+     * SurfaceHolder has a valid Surface` when it is called too early, which
+     * used to crash the whole app.
+     */
+    fun startPreview(): Boolean {
+        if (!hasValidSurface()) {
+            Logger.log("STREAMER", "Preview postponed: the surface is not ready yet")
+            return false
+        }
+
         if (!rtspServerCamera2.isOnPreview) {
             rtspServerCamera2.startPreview(options.camera, options.width, options.height)
+        }
+        return true
+    }
+
+    /**
+     * Called by StreamActivity once the surface is created. This is the only
+     * place that starts the preview for a new session; [startStream] never
+     * kicks it off on its own.
+     */
+    fun onSurfaceCreated() {
+        Handler(Looper.getMainLooper()).post {
+            if (!startPreview()) {
+                return@post
+            }
+
+            // An ACTIVATION packet that arrived while the surface was missing
+            // is applied now.
+            val pending = pendingOptions ?: return@post
+            pendingOptions = null
+            Logger.log("STREAMER", "Applying the stream options that were pending")
+            beginStream(options, pending)
         }
     }
 
@@ -271,21 +331,42 @@ class Streamer(
         this.options = newOptions
 
         Handler(Looper.getMainLooper()).post {
-            val needPreviewRestart = (oldOptions.width != newOptions.width) ||
-                    (oldOptions.height != newOptions.height) ||
-                    (oldOptions.camera != newOptions.camera)
+            if (!hasValidSurface()) {
+                // Nothing can be rendered yet: remember the request and let
+                // onSurfaceCreated() finish it.
+                pendingOptions = newOptions
+                Logger.log("STREAMER", "Stream postponed: the surface is not ready yet")
+                return@post
+            }
+            beginStream(oldOptions, newOptions)
+        }
+    }
 
-            if (needPreviewRestart && rtspServerCamera2.isOnPreview) {
+    private fun beginStream(oldOptions: StreamOptions, newOptions: StreamOptions) {
+        val needPreviewRestart = (oldOptions.width != newOptions.width) ||
+                (oldOptions.height != newOptions.height) ||
+                (oldOptions.camera != newOptions.camera)
+
+        // The RTSP server outlives a desktop-client reconnect, so a second
+        // ACTIVATION can arrive while we are still streaming. Stop it first:
+        // RtspServer.setVideoCodec() throws "Please set VideoCodec before
+        // startServer" while the server is running.
+        if (needPreviewRestart && rtspServerCamera2.isStreaming) {
+            rtspServerCamera2.stopStream()
+        }
+
+        if (needPreviewRestart) {
+            if (rtspServerCamera2.isOnPreview) {
                 rtspServerCamera2.stopPreview()
             }
-
-            if (!rtspServerCamera2.isOnPreview) {
-                startPreview()
-            }
-
-            applyOptionsToStream(newOptions)
-            startStreamInternal()
+            // Restart the preview with the new geometry. When nothing changed
+            // the preview is already running (started by onSurfaceCreated), so
+            // there is nothing to do here.
+            startPreview()
         }
+
+        applyOptionsToStream(newOptions)
+        startStreamInternal()
     }
 
     private fun startStreamInternal() {
@@ -323,7 +404,13 @@ class Streamer(
 
         setStabilization(options.stabilization)
         setFocus(options.focusMode)
-        rtspServerCamera2.setVideoCodec(if (options.h265Enabled) VideoCodec.H265 else VideoCodec.H264)
+
+        // RtspServer throws "Please set VideoCodec before startServer" while it
+        // is running. beginStream() stops the stream when the options require a
+        // restart, so this only runs on a stopped server.
+        if (!rtspServerCamera2.isStreaming) {
+            rtspServerCamera2.setVideoCodec(if (options.h265Enabled) VideoCodec.H265 else VideoCodec.H264)
+        }
 
         options.activeEffectFilter?.let { rtspServerCamera2.glInterface.addFilter(it) }
         options.activeCorrectionFilters.forEach {
@@ -333,12 +420,32 @@ class Streamer(
 
     private fun restartStream() {
         Handler(Looper.getMainLooper()).post {
+            if (!hasValidSurface()) {
+                // Nothing to restart without a surface; onSurfaceCreated()
+                // starts the preview and applies this request.
+                pendingOptions = options
+                Logger.log("STREAMER", "Restart postponed: the surface is not ready yet")
+                return@post
+            }
+
             val wasStreaming = rtspServerCamera2.isStreaming
 
-            rtspServerCamera2.stopStream()
-            rtspServerCamera2.stopPreview()
+            if (rtspServerCamera2.isStreaming) {
+                rtspServerCamera2.stopStream()
+            }
+            if (rtspServerCamera2.isOnPreview) {
+                rtspServerCamera2.stopPreview()
+            }
 
-            startPreview()
+            if (!startPreview()) {
+                return@post
+            }
+
+            // Re-apply the options on the stopped server: the codec can only be
+            // changed while it is stopped, and the resolution/fps changes that
+            // lead here also need a fresh bitrate and encoder setup.
+            applyOptionsToStream(options)
+
             if (wasStreaming) {
                 startStreamInternal()
             }
