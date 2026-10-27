@@ -27,18 +27,11 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         viewBinding = ActivityStreamBinding.inflate(layoutInflater)
+        connectionManager.setOnBytesReceivedCallback(::onBytesReceived)
+        streamer = Streamer(StreamOptions(), this, viewBinding.surfaceView)
         viewBinding.surfaceView.holder.addCallback(this)
 
         setContentView(viewBinding.root)
-
-        // Disable navigating to logs activity for now as it breaks streaming
-//        viewBinding.logReportButton.setOnClickListener {
-//            val intent = Intent(this, LogActivity::class.java)
-//            startActivity(intent)
-//        }
-
-        connectionManager.setOnBytesReceivedCallback(::onBytesReceived)
-        streamer = Streamer(StreamOptions(), this, viewBinding.surfaceView)
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
