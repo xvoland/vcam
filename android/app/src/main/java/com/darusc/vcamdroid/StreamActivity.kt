@@ -125,7 +125,10 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
                 streamer.setZoom(Float.fromBits(factor))
             }
             PacketType.SCREEN -> {
-                setScreenOff(buffer[1].toInt() == 1)
+                // Control packets arrive on the TCP reader thread, and the
+                // blanking touches views and the window, so hop to the UI thread.
+                val off = buffer[1].toInt() == 1
+                runOnUiThread { setScreenOff(off) }
             }
             PacketType.FLIP -> {
                 val axis = buffer[1].toInt()
