@@ -163,14 +163,10 @@ class MainActivity : AppCompatActivity(), ConnectionManager.ConnectionStateCallb
             runOnUiThread {
                 if(result != null) {
                     qrscanner.stop()
-                    MaterialAlertDialogBuilder(this)
-                        .setTitle("Connect via WiFi")
-                        .setMessage("Connect to ${result.address}:${result.port}?")
-                        .setPositiveButton("Connect") { _, _ ->
-                            connectionManager.connect(result.address, result.port)
-                        }
-                        .setNegativeButton("Cancel") { _, _ -> qrscanner.start() }
-                        .show()
+                    val target = "${result.address}:${result.port}"
+                    Toast.makeText(this, "Connecting to $target...", Toast.LENGTH_LONG).show()
+                    Logger.log("MAIN", "Auto-connecting to $target from QR")
+                    connectionManager.connect(result.address, result.port)
                 } else {
                     Logger.log("MAIN", "Invalid QR code")
                     Toast.makeText(this, "Invalid QR code", Toast.LENGTH_SHORT).show()
