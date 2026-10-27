@@ -29,6 +29,14 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
     /** True while the desktop client asked us to blank the screen. */
     private var screenOff = false
 
+    /**
+     * The last request from the desktop client. Kept separately from
+     * [screenOff] because a request can arrive before the SurfaceView has a
+     * surface: showing an opaque overlay at that point stops the surface from
+     * ever being created, and the stream would never start.
+     */
+    private var screenOffRequested = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -54,6 +62,11 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
         // applies any stream options that arrived before this callback.
         if (::streamer.isInitialized) {
             streamer.onSurfaceCreated()
+        }
+        // A blanking request that arrived before the surface existed is applied
+        // now that it does.
+        if (screenOffRequested && !screenOff) {
+            applyScreenOff(true)
         }
     }
 
@@ -154,6 +167,18 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
      * means a single tap brings everything back instantly — no lock screen.
      */
     private fun setScreenOff(enabled: Boolean) {
+        screenOffRequested = enabled
+        if (enabled && !streamer.hasValidSurface()) {
+            Logger.log("STREAM", "Screen blanking postponed: the surface is not ready yet")
+            return
+        }
+        if (screenOff == enabled) {
+            return
+        }
+        applyScreenOff(enabled)
+    }
+
+    private fun applyScreenOff(enabled: Boolean) {
         if (screenOff == enabled) {
             return
         }

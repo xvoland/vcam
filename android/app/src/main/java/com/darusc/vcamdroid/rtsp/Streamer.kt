@@ -283,7 +283,7 @@ class Streamer(
      * The view is inflated and measured asynchronously, so an ACTIVATION packet
      * can easily arrive before the surface exists.
      */
-    private fun hasValidSurface(): Boolean =
+    fun hasValidSurface(): Boolean =
         openGlView.holder.surface?.isValid == true
 
     /**
