@@ -14,11 +14,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
       - name: Grant execute permission
         run: chmod +x android/gradlew
       - name: Build APK
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
         run: cd android && ./gradlew assembleDebug
       - name: Upload APK
         uses: actions/upload-artifact@v4
