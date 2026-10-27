@@ -3,9 +3,12 @@ package com.darusc.vcamdroid
 import android.content.Intent
 import android.os.Bundle
 import android.view.SurfaceHolder
+import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.darusc.vcamdroid.databinding.ActivityStreamBinding
 import com.darusc.vcamdroid.networking.ConnectionManager
 import com.darusc.vcamdroid.networking.PacketType
@@ -22,6 +25,9 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
     private val connectionManager = ConnectionManager.getInstance(this)
     private lateinit var streamer: Streamer
 
+    /** True while the desktop client asked us to blank the screen. */
+    private var screenOff = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -30,6 +36,7 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
         connectionManager.setOnBytesReceivedCallback(::onBytesReceived)
         streamer = Streamer(StreamOptions(), this, viewBinding.surfaceView)
         viewBinding.surfaceView.holder.addCallback(this)
+        viewBinding.blackoutView.setOnClickListener { wakeFromTouch() }
 
         setContentView(viewBinding.root)
     }
@@ -117,10 +124,54 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
                         ((buffer[4].toInt() and 0xFF) shl 24)
                 streamer.setZoom(Float.fromBits(factor))
             }
+            PacketType.SCREEN -> {
+                setScreenOff(buffer[1].toInt() == 1)
+            }
             PacketType.FLIP -> {
                 val axis = buffer[1].toInt()
                 streamer.flip(if (axis == 0) StreamOptions.FlipAxis.VERTICAL else StreamOptions.FlipAxis.HORIZONTAL)
             }
         }
+    }
+
+    /**
+     * Blanks the screen on request from the desktop client.
+     *
+     * There is no permission-free way to actually power the display off, so the
+     * activity draws a black overlay and drops the window brightness to zero.
+     * `FLAG_KEEP_SCREEN_ON` (set in onCreate) keeps the device awake, which
+     * means a single tap brings everything back instantly — no lock screen.
+     */
+    private fun setScreenOff(enabled: Boolean) {
+        if (screenOff == enabled) {
+            return
+        }
+        screenOff = enabled
+        viewBinding.blackoutView.visibility = if (enabled) View.VISIBLE else View.GONE
+
+        val params = window.attributes
+        params.screenBrightness =
+            if (enabled) 0f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        window.attributes = params
+
+        val bars = WindowInsetsControllerCompat(window, viewBinding.root)
+        if (enabled) {
+            bars.hide(WindowInsetsCompat.Type.systemBars())
+            bars.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            bars.show(WindowInsetsCompat.Type.systemBars())
+        }
+
+        Logger.log("STREAM", if (enabled) "Screen blanked by the client" else "Screen restored")
+    }
+
+    /** A tap on the black overlay turns the screen back on and tells the client. */
+    private fun wakeFromTouch() {
+        if (!screenOff) {
+            return
+        }
+        setScreenOff(false)
+        connectionManager.sendScreenState(false)
     }
 }

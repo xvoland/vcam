@@ -19,5 +19,8 @@ class PacketType {
         const val FPS: Byte = 0xE
         const val ZOOM: Byte = 0xF
         const val FLIP: Byte = 0x10
+        // Desktop -> phone: blank the screen (1) or restore it (0).
+        // Phone -> desktop: 0 means the user tapped and the screen is back.
+        const val SCREEN: Byte = 0x11
     }
 }

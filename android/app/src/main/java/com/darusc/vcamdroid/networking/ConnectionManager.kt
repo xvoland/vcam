@@ -107,6 +107,18 @@ class ConnectionManager private constructor() : Connection.Listener {
         }
     }
 
+    /**
+     * Tells the desktop client the screen was woken up locally, so its
+     * "screen off" checkbox can follow along. The protocol is otherwise
+     * one-way (desktop -> phone) for control packets.
+     */
+    fun sendScreenState(off: Boolean) {
+        val packet = byteArrayOf(PacketType.SCREEN, if (off) 1 else 0)
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching { tcpConn?.send(packet) }
+        }
+    }
+
     override fun onBytesReceived(buffer: ByteArray, bytes: Int) {
         onBytesReceivedCallback?.let { it(buffer, bytes) }
     }
