@@ -2,6 +2,7 @@ package com.darusc.vcamdroid
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.View
@@ -37,6 +38,9 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
      */
     private var screenOffRequested = false
 
+    /** When the screen was blanked, to ignore the digitizer's settling noise. */
+    private var blankedAt = 0L
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -49,6 +53,8 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
         // first touch, even if the finger moves a little.
         viewBinding.blackoutView.setOnTouchListener { _, event ->
             if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                Logger.log("STREAM", "Touch on the black overlay at " +
+                        "${event.x.toInt()},${event.y.toInt()}")
                 wakeFromTouch()
             }
             true
@@ -183,6 +189,9 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
             return
         }
         screenOff = enabled
+        if (enabled) {
+            blankedAt = SystemClock.elapsedRealtime()
+        }
         viewBinding.blackoutView.visibility = if (enabled) View.VISIBLE else View.GONE
 
         val params = window.attributes
@@ -209,6 +218,12 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
     /** A tap on the black overlay turns the screen back on and tells the client. */
     private fun wakeFromTouch() {
         if (!screenOff) {
+            return
+        }
+        // Changing the backlight makes the digitizer report a transient touch on
+        // this device, so ignore events right after blanking.
+        if (SystemClock.elapsedRealtime() - blankedAt < 800) {
+            Logger.log("STREAM", "Ignoring a touch right after blanking")
             return
         }
         setScreenOff(false)
