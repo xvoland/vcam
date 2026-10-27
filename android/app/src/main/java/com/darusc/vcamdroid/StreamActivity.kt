@@ -2,6 +2,7 @@ package com.darusc.vcamdroid
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.View
 import android.view.WindowManager
@@ -36,7 +37,14 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
         connectionManager.setOnBytesReceivedCallback(::onBytesReceived)
         streamer = Streamer(StreamOptions(), this, viewBinding.surfaceView)
         viewBinding.surfaceView.holder.addCallback(this)
-        viewBinding.blackoutView.setOnClickListener { wakeFromTouch() }
+        // ACTION_DOWN rather than a click: the overlay must react on the very
+        // first touch, even if the finger moves a little.
+        viewBinding.blackoutView.setOnTouchListener { _, event ->
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                wakeFromTouch()
+            }
+            true
+        }
 
         setContentView(viewBinding.root)
     }
@@ -153,8 +161,12 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
         viewBinding.blackoutView.visibility = if (enabled) View.VISIBLE else View.GONE
 
         val params = window.attributes
+        // Not 0f: on this panel a zero backlight also stops the touch
+        // controller from reporting taps, so the screen could not be woken by
+        // touching it. A black overlay at minimum brightness looks the same on
+        // an AMOLED panel and keeps touch alive.
         params.screenBrightness =
-            if (enabled) 0f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            if (enabled) 0.01f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
         window.attributes = params
 
         val bars = WindowInsetsControllerCompat(window, viewBinding.root)
