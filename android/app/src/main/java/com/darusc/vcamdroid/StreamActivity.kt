@@ -1,3 +1,6 @@
+// (c) 2026, Vitalii Tereshchuk / xVoLAnD (https://dotoca.net) All rights reserved.
+// Modifications to the original darusc/VCamdroid project (MIT License).
+
 package com.darusc.vcamdroid
 
 import android.content.Intent
