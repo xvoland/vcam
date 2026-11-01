@@ -1,4 +1,4 @@
-package com.darusc.vcamdroid
+package com.dotocanet.peeklycam
 
 import org.junit.Test
 

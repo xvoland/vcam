@@ -14,6 +14,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Vcamdroid"
+rootProject.name = "PeeklyCam"
 include(":app")
  

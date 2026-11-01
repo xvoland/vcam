@@ -1,4 +1,4 @@
-# VCamdroid - Android client
+# PeeklyCam - Android client
 
 ### Dependencies
 

@@ -16,7 +16,7 @@
         app:layout_constraintTop_toTopOf="parent"
         tools:ignore="MissingConstraints" />
 
-    <com.darusc.vcamdroid.video.overlays.ScannerOverlay
+    <com.dotocanet.peeklycam.video.overlays.ScannerOverlay
         android:id="@+id/overlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"

@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-    namespace = "com.darusc.vcamdroid"
+    namespace = "com.dotocanet.peeklycam"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.darusc.vcamdroid"
+        applicationId = "com.dotocanet.peeklycam"
         minSdk = 28
         targetSdk = 35
         versionCode = 11
