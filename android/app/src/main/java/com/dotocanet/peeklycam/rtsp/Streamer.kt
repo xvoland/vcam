@@ -380,7 +380,8 @@ class Streamer(
                     options.height,
                     options.fps,
                     options.bitrate,
-                    0
+                    1,   // keyframe interval 1 s (was 0 = encoder default, up to 7 s)
+                    0    // rotation
                 )
                 rtspServerCamera2.startStream(URL)
                 Logger.log("STREAMER", "Stream started")
