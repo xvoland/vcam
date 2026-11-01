@@ -93,7 +93,8 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
     }
 
     private fun onBytesReceived(buffer: ByteArray, bytes: Int) {
-        println(buffer)
+        // Never interpret a partial or empty read as a packet.
+        if (bytes < 2) return
         // Packet type is always the first byte
         val type = buffer[0]
 

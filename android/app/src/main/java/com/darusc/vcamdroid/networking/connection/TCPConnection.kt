@@ -60,13 +60,18 @@ class TCPConnection(
         val buf = ByteArray(512)
         while (running.get()) {
             try {
-                val bytes = inputStream?.read(buf)
-                // When connected over ADB stream end of file might be reached
-                if(isOverAdb && bytes == -1) {
+                val bytes = inputStream?.read(buf) ?: -1
+                // read() returns -1 at end of stream. Over Wi-Fi the socket can
+                // be closed by the other side at any time; without this check
+                // the loop spun at 100% CPU and kept re-delivering the stale
+                // buffer contents to the listener (which, for example, re-ran
+                // the screen-off command hundreds of times per second) until
+                // the system killed the process.
+                if (bytes <= 0) {
                     listener.onDisconnected()
                     break
                 }
-                listener.onBytesReceived(buf, bytes ?: 0)
+                listener.onBytesReceived(buf, bytes)
             } catch (e: Exception) {
                 Logger.log("TCPConnection", "Error while reading. Closing socket. ${e.message}")
                 listener.onDisconnected()
