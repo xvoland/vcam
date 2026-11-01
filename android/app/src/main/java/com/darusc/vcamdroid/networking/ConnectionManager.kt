@@ -3,7 +3,6 @@
 
 package com.darusc.vcamdroid.networking
 
-import android.util.Log
 import com.darusc.vcamdroid.networking.connection.Connection
 import com.darusc.vcamdroid.networking.connection.TCPConnection
 import com.darusc.vcamdroid.util.Logger
@@ -11,7 +10,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-class ConnectionManager private constructor() : Connection.Listener {
+class ConnectionManager private constructor() {
 
     private val TAG = "VCamdroid"
 
@@ -46,15 +45,26 @@ class ConnectionManager private constructor() : Connection.Listener {
         fun onDisconnected() { }
     }
 
+    private val lock = Any()
+
+    /**
+     * Bumped on every connection attempt. A connection whose generation is no
+     * longer current is stale: its reader thread may still be alive, but its
+     * packets and its disconnect must be ignored.
+     */
+    @Volatile private var generation = 0
+
     val localIpAddress: String
-        get() = tcpConn!!.localIpAddress
+        get() = tcpConn?.localIpAddress ?: "127.0.0.1"
+
+    /** True while a socket is open (an attempt in progress does not count). */
+    val isConnected: Boolean
+        get() = synchronized(lock) { tcpConn != null }
 
     private var connectionStateCallback: ConnectionStateCallback? = null
     private var onBytesReceivedCallback: ((buffer: ByteArray, bytes: Int) -> Unit)? = null
 
     private var tcpConn: TCPConnection? = null
-
-    private var streamingEnabled = false
 
     private fun setConnectionStateCallback(connectionStateCallback: ConnectionStateCallback) {
         this.connectionStateCallback = connectionStateCallback
@@ -63,50 +73,120 @@ class ConnectionManager private constructor() : Connection.Listener {
     /**
      * The bytesReceivedListener is called only for packets of type different than PacketType.ACTIVATION.
      * These packets are handled internally
+     *
+     * Pass `null` when the receiving activity goes away: the manager is a
+     * singleton and would otherwise call into a destroyed activity.
      */
-    fun setOnBytesReceivedCallback(onBytesReceivedCallback: (buffer: ByteArray, bytes: Int) -> Unit) {
+    fun setOnBytesReceivedCallback(onBytesReceivedCallback: ((buffer: ByteArray, bytes: Int) -> Unit)?) {
         this.onBytesReceivedCallback = onBytesReceivedCallback
     }
 
     /**
      * Connect in WIFI mode.
      */
-    fun connect(ipAddress: String, port: Int) {
+    fun connect(ipAddress: String, port: Int) = connectInternal(ipAddress, port, false)
+
+    /**
+     * Connect in USB mode (through adb)
+     */
+    fun connect(port: Int) = connectInternal("127.0.0.1", port, true)
+
+    private fun connectInternal(ipAddress: String, port: Int, isOverAdb: Boolean) {
+        val mode = if (isOverAdb) Mode.USB else Mode.WIFI
+
         CoroutineScope(Dispatchers.IO).launch {
+            // Invalidate whatever came before and drop its socket. Two
+            // connections used to coexist after a reconnect: the old reader
+            // thread then reported "Socket closed" for the replaced session,
+            // which closed the *new* socket and finished the new
+            // StreamActivity, so the stream never appeared.
+            val myGeneration: Int
+            val previous: TCPConnection?
+            synchronized(lock) {
+                generation += 1
+                myGeneration = generation
+                previous = tcpConn
+                tcpConn = null
+            }
+            previous?.let { conn ->
+                Logger.log("CONNECTION MANAGER", "Replacing the previous connection")
+                runCatching { conn.close() }
+            }
+
+            val listener = object : Connection.Listener {
+                override fun onBytesReceived(buffer: ByteArray, bytes: Int) {
+                    if (myGeneration != generation) {
+                        return
+                    }
+                    onBytesReceivedCallback?.invoke(buffer, bytes)
+                }
+
+                override fun onDisconnected() {
+                    if (myGeneration != generation) {
+                        return
+                    }
+                    handleDisconnected(myGeneration)
+                }
+            }
+
             try {
-                tcpConn = TCPConnection(ipAddress, port, false, this@ConnectionManager)
-                connectionStateCallback?.onConnectionSuccessful(Mode.WIFI)
+                val connection = TCPConnection(ipAddress, port, isOverAdb, listener)
+                val superseded = synchronized(lock) {
+                    if (myGeneration != generation) {
+                        true
+                    } else {
+                        tcpConn = connection
+                        false
+                    }
+                }
+                if (superseded) {
+                    Logger.log("CONNECTION MANAGER", "Dropping a superseded connection to $ipAddress:$port")
+                    runCatching { connection.close() }
+                    return@launch
+                }
+                connectionStateCallback?.onConnectionSuccessful(mode)
             } catch (e: Connection.ConnectionFailedException) {
+                if (myGeneration != generation) {
+                    return@launch
+                }
                 Logger.log("CONNECTION MANAGER", "" + e.message)
-                connectionStateCallback?.onConnectionFailed(Mode.WIFI)
+                connectionStateCallback?.onConnectionFailed(mode)
             }
         }
     }
 
     /**
-     * Connect in USB mode (through adb)
+     * Closes the current connection without notifying the listener. Used when
+     * the streaming activity is finished on purpose: the socket must not stay
+     * open behind the pairing screen, or the next QR scan would open a second
+     * session on top of a dead one.
      */
-    fun connect(port: Int) {
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                tcpConn = TCPConnection("127.0.0.1", port, true, this@ConnectionManager)
-                connectionStateCallback?.onConnectionSuccessful(Mode.USB)
-            } catch (e: Connection.ConnectionFailedException) {
-                Logger.log("CONNECTION MANAGER", "" + e.message)
-                connectionStateCallback?.onConnectionFailed(Mode.USB)
-            }
+    fun disconnect() {
+        val connection: TCPConnection?
+        synchronized(lock) {
+            generation += 1
+            connection = tcpConn
+            tcpConn = null
+        }
+        connection?.let { conn ->
+            Logger.log("CONNECTION MANAGER", "Disconnected on request")
+            runCatching { conn.close() }
         }
     }
 
     fun sendDescriptor(descriptor: DeviceDescriptor) {
+        val bytes = descriptor.serialize()
         CoroutineScope(Dispatchers.IO).launch {
-            tcpConn?.send(descriptor.serialize())
+            // The socket can be closed by a reconnect at any moment; a failed
+            // send must not take the process down.
+            runCatching { tcpConn?.send(bytes) }
         }
     }
 
     fun sendErrorReport(report: ErrorReport) {
+        val bytes = report.serialize()
         CoroutineScope(Dispatchers.IO).launch {
-            tcpConn?.send(report.serialize())
+            runCatching { tcpConn?.send(bytes) }
         }
     }
 
@@ -122,14 +202,17 @@ class ConnectionManager private constructor() : Connection.Listener {
         }
     }
 
-    override fun onBytesReceived(buffer: ByteArray, bytes: Int) {
-        onBytesReceivedCallback?.let { it(buffer, bytes) }
-    }
-
-    override fun onDisconnected() {
+    private fun handleDisconnected(fromGeneration: Int) {
         CoroutineScope(Dispatchers.Main).launch {
-            streamingEnabled = false
-            tcpConn?.close()
+            val connection = synchronized(lock) {
+                // A reconnect may have started between the reader thread's
+                // check and this callback: never tear down a newer session.
+                if (fromGeneration != generation) {
+                    return@launch
+                }
+                tcpConn.also { tcpConn = null }
+            }
+            connection?.let { runCatching { it.close() } }
             connectionStateCallback?.onDisconnected()
         }
     }

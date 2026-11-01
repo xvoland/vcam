@@ -49,8 +49,13 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         viewBinding = ActivityStreamBinding.inflate(layoutInflater)
-        connectionManager.setOnBytesReceivedCallback(::onBytesReceived)
+        // Create the streamer *before* registering the callback. The socket is
+        // already open when this activity starts, so the reader thread can
+        // deliver a packet immediately; the callback used to hit
+        // "lateinit property streamer has not been initialized", which closed
+        // the connection and dropped the freshly started stream.
         streamer = Streamer(StreamOptions(), this, viewBinding.surfaceView)
+        connectionManager.setOnBytesReceivedCallback(::onBytesReceived)
         viewBinding.surfaceView.holder.addCallback(this)
         // ACTION_DOWN rather than a click: the overlay must react on the very
         // first touch, even if the finger moves a little.
@@ -88,13 +93,28 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
     override fun onDisconnected() {
         Toast.makeText(this, "Connection closed by server", Toast.LENGTH_LONG).show()
         Logger.log("STREAM", "TCP server disconnected")
-        streamer.stop()
+        if (::streamer.isInitialized) {
+            streamer.stop()
+        }
         finish()
     }
 
+    override fun onDestroy() {
+        // The connection manager is a singleton and outlives this activity:
+        // drop the callback so no packet is delivered to destroyed views.
+        connectionManager.setOnBytesReceivedCallback(null)
+        if (isFinishing) {
+            // Leaving the stream on purpose (Back): close the session instead
+            // of leaving it open behind the pairing screen.
+            connectionManager.disconnect()
+        }
+        super.onDestroy()
+    }
+
     private fun onBytesReceived(buffer: ByteArray, bytes: Int) {
-        // Never interpret a partial or empty read as a packet.
-        if (bytes < 2) return
+        // Never interpret a partial or empty read as a packet, and never touch
+        // a streamer that does not exist yet.
+        if (bytes < 2 || !::streamer.isInitialized) return
         // Packet type is always the first byte
         val type = buffer[0]
 
