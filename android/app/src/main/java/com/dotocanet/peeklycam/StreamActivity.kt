@@ -20,6 +20,7 @@ import com.dotocanet.peeklycam.networking.PacketType
 import com.dotocanet.peeklycam.rtsp.Streamer
 import com.dotocanet.peeklycam.rtsp.StreamOptions
 import com.dotocanet.peeklycam.util.Logger
+import com.dotocanet.peeklycam.util.Splash
 
 class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionManager.ConnectionStateCallback {
 
@@ -76,6 +77,7 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
         }
 
         setContentView(viewBinding.root)
+        Splash.run(viewBinding.splashOverlay, viewBinding.splashVersion, BuildConfig.VERSION_NAME)
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {

@@ -29,6 +29,7 @@ import androidx.core.content.ContextCompat
 import com.dotocanet.peeklycam.databinding.ActivityMainBinding
 import com.dotocanet.peeklycam.networking.ConnectionManager
 import com.dotocanet.peeklycam.util.Logger
+import com.dotocanet.peeklycam.util.Splash
 import com.dotocanet.peeklycam.video.Camera
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.security.Permission
@@ -56,7 +57,18 @@ class MainActivity : AppCompatActivity(), ConnectionManager.ConnectionStateCallb
         }
 
         enableEdgeToEdge()
+        setupSplash()
         initialize()
+    }
+
+    /**
+     * Shows the splash (icon, name, version on brand blue) for a moment and
+     * fades it out smoothly. The connection setup continues underneath. The
+     * StreamActivity shows the same overlay, so the splash survives the
+     * connection taking us there in the first second.
+     */
+    private fun setupSplash() {
+        Splash.run(viewBinding.splashOverlay, viewBinding.splashVersion, BuildConfig.VERSION_NAME)
     }
 
     override fun onResume() {
