@@ -92,6 +92,7 @@ class Streamer(
      * Switch camera front <-> back
      */
     fun switchCamera() {
+        Logger.log("STREAMER", "Switching camera (current=${options.camera})")
         try {
             rtspServerCamera2.switchCamera()
             // Make sure local state is synced correctly by manually updating it
@@ -310,22 +311,46 @@ class Streamer(
     }
 
     /**
+     * [startPreview] with a bounded retry for the restart race.
+     *
+     * Immediately after `stopStream()/stopPreview()` the GL thread has not
+     * released the old window surface yet, and `startPreview()` then fails with
+     * `eglCreateWindowSurface EGL error 12291` (EGL_BAD_ALLOC) and kills the
+     * app. Waiting a moment and trying again lets the release finish; the GL
+     * error is therefore caught here instead of crashing the process. When the
+     * preview finally comes up, [onPreviewReady] finishes the interrupted
+     * sequence (option re-application, stream start) .
+     */
+    private fun startPreviewSafe(retriesLeft: Int, onPreviewReady: () -> Unit) {
+        try {
+            if (startPreview()) onPreviewReady()
+        } catch (e: RuntimeException) {
+            Logger.log("STREAMER", "Preview failed: ${e.message}; retrying in 300 ms ($retriesLeft attempts left)")
+            if (retriesLeft > 0) {
+                Handler(Looper.getMainLooper()).postDelayed({
+                    startPreviewSafe(retriesLeft - 1, onPreviewReady)
+                }, 300)
+            } else {
+                Logger.log("STREAMER", "Giving up on the preview")
+            }
+        }
+    }
+
+    /**
      * Called by StreamActivity once the surface is created. This is the only
      * place that starts the preview for a new session; [startStream] never
      * kicks it off on its own.
      */
     fun onSurfaceCreated() {
         Handler(Looper.getMainLooper()).post {
-            if (!startPreview()) {
-                return@post
+            startPreviewSafe(5) {
+                // An ACTIVATION packet that arrived while the surface was missing
+                // is applied now.
+                val pending = pendingOptions ?: return@startPreviewSafe
+                pendingOptions = null
+                Logger.log("STREAMER", "Applying the stream options that were pending")
+                beginStream(options, pending)
             }
-
-            // An ACTIVATION packet that arrived while the surface was missing
-            // is applied now.
-            val pending = pendingOptions ?: return@post
-            pendingOptions = null
-            Logger.log("STREAMER", "Applying the stream options that were pending")
-            beginStream(options, pending)
         }
     }
 
@@ -362,14 +387,16 @@ class Streamer(
             if (rtspServerCamera2.isOnPreview) {
                 rtspServerCamera2.stopPreview()
             }
-            // Restart the preview with the new geometry. When nothing changed
-            // the preview is already running (started by onSurfaceCreated), so
-            // there is nothing to do here.
-            startPreview()
         }
 
-        applyOptionsToStream(newOptions)
-        startStreamInternal()
+        // Restart the preview with the new geometry. When nothing changed
+        // the preview is already running (started by onSurfaceCreated), so
+        // there is nothing to do here. startPreviewSafe also covers the
+        // EGL_BAD_ALLOC a quick restart after stopPreview can trigger.
+        startPreviewSafe(10) {
+            applyOptionsToStream(newOptions)
+            startStreamInternal()
+        }
     }
 
     private fun startStreamInternal() {
@@ -441,17 +468,16 @@ class Streamer(
                 rtspServerCamera2.stopPreview()
             }
 
-            if (!startPreview()) {
-                return@post
-            }
+            startPreviewSafe(10) {
+                // Re-apply the options on the stopped server: the codec can
+                // only be changed while it is stopped, and the resolution/fps
+                // changes that lead here also need a fresh bitrate and encoder
+                // setup.
+                applyOptionsToStream(options)
 
-            // Re-apply the options on the stopped server: the codec can only be
-            // changed while it is stopped, and the resolution/fps changes that
-            // lead here also need a fresh bitrate and encoder setup.
-            applyOptionsToStream(options)
-
-            if (wasStreaming) {
-                startStreamInternal()
+                if (wasStreaming) {
+                    startStreamInternal()
+                }
             }
         }
     }

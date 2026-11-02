@@ -30,6 +30,13 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
     private val connectionManager = ConnectionManager.getInstance(this)
     private lateinit var streamer: Streamer
 
+    /**
+     * Control packets can arrive in fragments (TCP is a byte stream; the
+     * CAMERA packet is a single byte, which used to be dropped entirely). Bytes
+     * are buffered here and cut into complete packets before dispatch.
+     */
+    private var rxLeftover = ByteArray(0)
+
     /** True while the desktop client asked us to blank the screen. */
     private var screenOff = false
 
@@ -112,12 +119,85 @@ class StreamActivity : AppCompatActivity(), SurfaceHolder.Callback, ConnectionMa
     }
 
     private fun onBytesReceived(buffer: ByteArray, bytes: Int) {
-        // Never interpret a partial or empty read as a packet, and never touch
-        // a streamer that does not exist yet.
-        if (bytes < 2 || !::streamer.isInitialized) return
-        // Packet type is always the first byte
-        val type = buffer[0]
+        // Never touch a streamer that does not exist yet.
+        if (bytes <= 0 || !::streamer.isInitialized) return
+        // Accumulate and split into complete packets; a TCP read can end
+        // mid-packet or contain several of them.
+        val merged = ByteArray(rxLeftover.size + bytes)
+        rxLeftover.copyInto(merged)
+        buffer.copyInto(merged, rxLeftover.size, 0, bytes)
+        var offset = 0
+        val end = merged.size
+        while (offset < end) {
+            val type = merged[offset]
+            val length = packetLength(type, merged, offset, end)
+            if (length < 0) {
+                // Incomplete packet: keep the rest and wait for more bytes.
+                break
+            }
+            val packet = merged.copyOfRange(offset, offset + length)
+            offset += length
+            handlePacket(type, packet)
+        }
+        rxLeftover = if (offset >= end) ByteArray(0) else merged.copyOfRange(offset, end)
+    }
 
+    /**
+     * Bytes of a full packet starting at [offset], or -1 while more data is
+     * needed. Payload lengths follow docs/PROTOCOL.md in the Rust repo.
+     * ACTIVATION and the junk-tolerant filter packets carry their own lengths.
+     */
+    private fun packetLength(type: Byte, buffer: ByteArray, offset: Int, end: Int): Int {
+        return when (type) {
+            PacketType.ACTIVATION -> {
+                // type(1) + fixed fields(36) = 37; then the slider count.
+                // Minimum full packet is 41 bytes (slider count 0, empty
+                // effect filter). Walk the sliders to find the true length.
+                if (end - offset < 39) return -1
+                val count = ((buffer[offset + 37].toInt() and 0xFF) shl 8) or
+                        (buffer[offset + 38].toInt() and 0xFF)
+                if (count > 64) return end - offset // malformed; hand over as-is
+                var idx = offset + 39
+                for (i in 0 until count) {
+                    if (idx + 2 > end) return -1
+                    val len = ((buffer[idx].toInt() and 0xFF) shl 8) or
+                            (buffer[idx + 1].toInt() and 0xFF)
+                    if (len > 64) return end - offset
+                    idx += 2 + len + 4 // name + value
+                }
+                if (idx + 2 > end) return -1
+                val effectLen = ((buffer[idx].toInt() and 0xFF) shl 8) or
+                        (buffer[idx + 1].toInt() and 0xFF)
+                if (effectLen > 128) return end - offset
+                idx += 2 + effectLen
+                if (idx > end) -1 else idx - offset
+            }
+            PacketType.RESOLUTION -> 5
+            PacketType.CAMERA -> 1
+            PacketType.EFFECT_FILTER, PacketType.CORRECTION_FILTER -> {
+                // [type][len][name...]
+                if (end - offset < 2) return -1
+                val nameLen = buffer[offset + 1].toInt() and 0xFF
+                if (2 + nameLen > end - offset) -1 else 2 + nameLen
+            }
+            PacketType.ROTATION -> 2
+            PacketType.BITRATE -> 3
+            PacketType.ADAPTIVE_BITRATE -> 5
+            PacketType.STABILIZATION -> 2
+            PacketType.FLASH -> 2
+            PacketType.FOCUS -> 2
+            PacketType.CODEC -> 2
+            PacketType.FPS -> 2
+            PacketType.ZOOM -> 5
+            PacketType.SCREEN -> 2
+            PacketType.FLIP -> 2
+            else -> end - offset // unknown type: old chunk behaviour
+        }
+    }
+
+    private fun handlePacket(type: Byte, packet: ByteArray) {
+        val buffer = packet
+        Logger.log("STREAM", "Packet type=0x%02x len=%d".format(type, packet.size))
         when (type) {
             PacketType.ACTIVATION -> {
                 val options = StreamOptions.deserialize(buffer)
